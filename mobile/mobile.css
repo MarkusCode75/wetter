@@ -44,13 +44,20 @@ svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; 
 .pull-hint.show { height: 22px; }
 
 /* ---------- Kopfbereich ---------- */
-.hero { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 4px 2px; }
+.hero { padding: 8px 4px 0; }
+.hero-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .hero .temp { font: 300 84px/0.95 'Space Grotesk', sans-serif; letter-spacing: -3px; }
-.hero .cond { font-size: 17px; font-weight: 600; margin-top: 10px; }
-.hero .line { display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 1.35; color: var(--soft); margin-top: 7px; }
-.hero .cond + .line { margin-top: 3px; margin-bottom: 4px; }
-.hero .line svg { width: 17px; height: 17px; color: var(--wind); flex: none; }
-.hero .big-ico { width: 96px; height: 96px; flex: none; }
+.hero .big-ico { width: 84px; height: 84px; flex: none; }
+.hero .cond { font-size: 17px; font-weight: 600; margin-top: 8px; }
+.hero .sub { font-size: 13px; color: var(--muted); margin-top: 3px; }
+/* Messwerte als 2×2-Kacheln */
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); }
+.stat > svg { width: 22px; height: 22px; color: var(--wind); flex: none; stroke-width: 2.2; }
+.stat > div { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.stat small { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat small:first-child { text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+.stat b { font: 600 16px 'Space Grotesk', sans-serif; white-space: nowrap; }
 .station { font-size: 11px; color: var(--muted); padding: 2px 4px 0; }
 .place-name { font-size: 13px; color: var(--soft); padding: 0 4px; display: flex; align-items: center; gap: 6px; }
 
@@ -255,8 +262,10 @@ svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; 
   .scroll { padding-left: 10px; padding-right: 10px; gap: 10px; }
   .hero .temp { font-size: 66px; letter-spacing: -2px; }
   .hero .big-ico { width: 60px; height: 60px; }
-  .hero .line { font-size: 12px; gap: 4px; }
-  .hero .line svg { width: 15px; height: 15px; }
+  .stats { gap: 6px; }
+  .stat { gap: 7px; padding: 7px 8px; }
+  .stat > svg { width: 18px; height: 18px; }
+  .stat b { font-size: 14px; }
   .loc-tabs button { font-size: 12px; gap: 3px; }
   .sunmoon > div { padding: 6px 7px; gap: 6px; }
   .sunmoon b { font-size: 12px; }

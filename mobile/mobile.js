@@ -20,6 +20,7 @@ const r2 = v => v == null || isNaN(v) ? '–' : (Math.round(v * 100) / 100).toLo
 const deg = v => v == null ? '–' : `${r0(v)}°`;
 const DIRS = ['Nord', 'Nordost', 'Ost', 'Südost', 'Süd', 'Südwest', 'West', 'Nordwest'];
 const dirName = d => d == null ? '' : DIRS[Math.round(d / 45) % 8];
+const WIND_SHORT = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
 const titleCase = s => !s ? '' : (s === s.toUpperCase() ? s.toLowerCase().replace(/(^|[\s\-/(])(\p{L})/gu, (m, a, b) => a + b.toUpperCase()) : s);
 // DWD kürzt Stationsnamen auf 20 Zeichen, z. B. „JUELICH (KLAERANLAGE“ – fehlende Klammer ergänzen
 const stationName = s => { const t = titleCase(s); return (t.match(/\(/g) || []).length > (t.match(/\)/g) || []).length ? `${t})` : t; };
@@ -321,6 +322,9 @@ function fetchPlace(loc, full = true) {
     jobs.current = getJSON(`https://api.brightsky.dev/current_weather?${q(ll)}`);
     jobs.alerts = getJSON(`https://api.brightsky.dev/alerts?${q(ll)}`);
     jobs.radar = getJSON(`https://api.brightsky.dev/radar?${q({ ...ll, distance: 5000, format: 'plain', date: radarFrom })}`);
+    // gemessener Verlauf der letzten Stunden (für die Luftdruck-Tendenz)
+    const nowIso = new Date().toISOString(), fromIso = new Date(Date.now() - 4 * 60 * MIN).toISOString();
+    jobs.hist = getJSON(`https://api.brightsky.dev/weather?${q({ ...ll, date: fromIso, last_date: nowIso })}`);
   }
   return settle(jobs);
 }
@@ -387,11 +391,21 @@ function hourIndexNow(times) {
   let i = times.findIndex(t => new Date(t).getTime() > now - 60 * MIN);
   return i < 0 ? 0 : i;
 }
-function pressureTrend(h, i0) {
-  const p = h.pressure_msl; if (!p || i0 < 3 || p[i0] == null || p[i0 - 3] == null) return '';
-  const d = p[i0] - p[i0 - 3];
+// Luftdruck-Tendenz über 3 Stunden: zuerst aus den DWD-Messungen, sonst aus dem Modellverlauf
+function trendWord(d) {
   if (Math.abs(d) < 0.5) return 'gleichbleibend';
   return `${Math.abs(d) < 1.5 ? 'leicht ' : ''}${d > 0 ? 'steigend' : 'fallend'}`;
+}
+function pressureTrend(h, i0, hist) {
+  const obs = (hist?.weather || []).filter(x => x.pressure_msl != null && new Date(x.timestamp) <= Date.now())
+    .map(x => [new Date(x.timestamp).getTime(), x.pressure_msl]).sort((a, b) => a[0] - b[0]);
+  if (obs.length >= 2) {
+    const [tl, pl] = obs[obs.length - 1];
+    const ref = obs.filter(([t]) => t <= tl - 2.5 * 60 * MIN).pop();
+    if (ref) return trendWord((pl - ref[1]) * 3 * 60 * MIN / (tl - ref[0]));   // auf 3 Stunden umgerechnet
+  }
+  const p = h?.pressure_msl; if (!p || i0 < 3 || p[i0] == null || p[i0 - 3] == null) return '';
+  return trendWord(p[i0] - p[i0 - 3]);
 }
 function nowcastSeries(radar) {
   const frames = radar?.radar, pos = radar?.latlon_position;
@@ -436,7 +450,7 @@ function renderWetter(loc, d) {
   const temp = w?.temperature ?? om?.temperature_2m;
   const wdir = w?.wind_direction_10 ?? om?.wind_direction_10m, wspd = w?.wind_speed_10 ?? om?.wind_speed_10m, gust = w?.wind_gust_speed_10 ?? om?.wind_gusts_10m;
   const press = w?.pressure_msl ?? om?.pressure_msl, rh = w?.relative_humidity ?? om?.relative_humidity_2m, dew = w?.dew_point ?? h?.dew_point_2m?.[i0];
-  const trend = h ? pressureTrend(h, i0) : '';
+  const trend = pressureTrend(h, i0, d.hist);
   const snowLikely = (temp ?? 5) <= 1;
   // gefühlte Temperatur: vom Modell, sonst aus Messwerten (Windchill nach DWD/JAG-TI-Formel)
   const feels = om?.apparent_temperature ?? (temp != null && wspd != null && temp <= 10 && wspd > 4.8
@@ -503,15 +517,22 @@ function renderWetter(loc, d) {
   body.innerHTML = `
     ${loc.key.startsWith('fav') ? `<div class="place-name">${ICO.starFill.replace('<svg', '<svg style="width:14px;height:14px;color:var(--accent)"')} ${esc(loc.name)}${loc.region ? ` <span class="muted">· ${esc(loc.region)}</span>` : ''}</div>` : ''}
     <div class="hero">
-      <div style="min-width:0">
+      <div class="hero-top">
         <div class="temp">${deg(temp)}</div>
-        <div class="cond">${esc(cond)}</div>
-        <div class="line" style="color:var(--muted)">${sub.join(' · ')}</div>
-        <div class="line">${windArrow(wdir, `Wind aus ${dirName(wdir)}`)}Wind ${r0(wspd)} km/h aus ${dirName(wdir)}${gust ? ` · Böen ${r0(gust)}` : ''}</div>
-        <div class="line"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.gauge}</svg>${r0(press)} hPa${trend ? ` <span class="muted">· ${trend}</span>` : ''}</div>
-        <div class="line"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.drop}</svg>Feuchte ${r0(rh)} %${dew != null ? ` <span class="muted">· Taupunkt ${r1(dew)}°</span>` : ''}</div>
+        ${icon(kind, 'big-ico', cond)}
       </div>
-      ${icon(kind, 'big-ico', cond)}
+      <div class="cond">${esc(cond)}</div>
+      <div class="sub">${sub.join(' · ')}</div>
+    </div>
+    <div class="stats" aria-label="Aktuelle Messwerte">
+      <div class="stat">${windArrow(wdir, `Wind aus ${dirName(wdir)}`)}
+        <div><small>Wind</small><b>${r0(wspd)} km/h ${WIND_SHORT[Math.round((wdir ?? 0) / 45) % 8]}</b><small>${gust ? `Böen ${r0(gust)} km/h` : `aus ${dirName(wdir)}`}</small></div></div>
+      <div class="stat"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.gauge}</svg>
+        <div><small>Luftdruck</small><b>${r0(press)} hPa</b><small>${trend || '&nbsp;'}</small></div></div>
+      <div class="stat"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.drop}</svg>
+        <div><small>Rel. Feuchte</small><b>${r0(rh)} %</b></div></div>
+      <div class="stat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 14.8V4a2 2 0 0 0-4 0v10.8a4 4 0 1 0 4 0z"/><path d="M12 9v7"/></svg>
+        <div><small>Taupunkt</small><b>${dew != null ? `${r1(dew)}°` : '–'}</b><small>${dew != null && temp != null && temp - dew <= 2 ? 'Nebel/Tau möglich' : '&nbsp;'}</small></div></div>
     </div>
     <div class="station">${w && src ? `Messstation ${esc(stationName(src.station_name))} (${r1(src.distance / 1000)} km) · ${fmtTime(w.timestamp)} Uhr · DWD` : 'Modellwerte DWD ICON'}</div>
 
@@ -645,6 +666,36 @@ async function fetchPvPerKwp(loc, planes) {
 }
 function dayStart(k) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + k); return d.getTime(); }
 
+// Diagramm über die hellen Stunden der nächsten 3 Tage (Nächte ausgespart), mehrere Reihen möglich
+function pvChart(pv, loc, series, opts) {
+  const W = 330, H = 100, B = 14, gap = 6;
+  const segs = [0, 1, 2].map(k => {
+    const st = Moon.sunTimes(new Date(dayStart(k) + 12 * 36e5), loc.lat, loc.lon);
+    const a = (st.rise?.getTime() ?? dayStart(k) + 6 * 36e5) - 30 * MIN, b = (st.set?.getTime() ?? dayStart(k) + 18 * 36e5) + 30 * MIN;
+    return { k, a, b, idx: pv.times.map((t, i) => [t, i]).filter(([t]) => t >= a && t <= b) };
+  });
+  const span = segs.reduce((s, g) => s + (g.b - g.a), 0), usable = W - gap * (segs.length - 1);
+  let off = 0; segs.forEach(g => { g.x0 = off; g.w = (g.b - g.a) / span * usable; off += g.w + gap; });
+  const maxV = Math.max(0.05, ...series.flatMap(s => segs.flatMap(g => g.idx.map(([, i]) => s.v[i] || 0))));
+  const X = (g, t) => (g.x0 + (t - g.a) / (g.b - g.a) * g.w).toFixed(1), Y = v => (H - B - (v || 0) / maxV * (H - B - 6)).toFixed(1);
+  let svg = '';
+  segs.forEach(g => {
+    svg += `<rect x="${g.x0.toFixed(1)}" y="0" width="${g.w.toFixed(1)}" height="${H - B}" rx="4" fill="#1a2230"/>`;
+    svg += `<text x="${(g.x0 + g.w / 2).toFixed(1)}" y="${H - 3}" text-anchor="middle">${g.k === 0 ? 'Heute' : g.k === 1 ? 'Morgen' : new Date(dayStart(g.k)).toLocaleDateString(de, { weekday: 'short' }).replace('.', '')}</text>`;
+  });
+  for (const s of series) for (const g of segs) {
+    if (g.idx.length < 2) continue;
+    const line = g.idx.map(([t, i], j) => `${j ? 'L' : 'M'}${X(g, t)} ${Y(s.v[i])}`).join(' ');
+    if (s.fill) svg += `<path d="${line} L${X(g, g.idx[g.idx.length - 1][0])} ${H - B} L${X(g, g.idx[0][0])} ${H - B} Z" fill="${s.color}" opacity=".22"/>`;
+    svg += `<path d="${line}" stroke="${s.color}" stroke-width="${s.width || 2}" fill="none" stroke-linejoin="round"/>`;
+  }
+  const now = Date.now(), gn = segs.find(g => now >= g.a && now <= g.b);
+  if (gn) svg += `<line x1="${X(gn, now)}" y1="0" x2="${X(gn, now)}" y2="${H - B}" stroke="#e7edf5" stroke-dasharray="2 3" opacity=".7"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(opts.label)}">
+      <style>text{fill:#93a3b8;stroke:none;font:9px Inter,sans-serif}rect{stroke:none}</style>${svg}</svg>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px"><span>${esc(opts.unit)}</span><span>Spitze ${opts.fmt(maxV)}</span></div>`;
+}
+
 async function renderPv() {
   const body = $('#pvBody');
   const home = homeLoc(), loc = home || activeLoc();
@@ -652,51 +703,61 @@ async function renderPv() {
   body.innerHTML = `<div class="row-between"><h1 class="h1" style="display:flex;align-items:center;gap:8px">${home ? ICO.home.replace('<svg', '<svg style="width:18px;height:18px;color:var(--muted)"') : ''}${esc(home ? 'Zuhause' : loc.name)}</h1></div><div class="placeholder">Lädt …</div>`;
 
   const userPlanes = (config.pv.planes || []).filter(p => p.kwp > 0 || p.tilt != null);
-  const demo = !userPlanes.length;
-  const planes = demo ? [{ name: 'Beispiel Süd', tilt: 35, azimuth: 0 }] : userPlanes;
-  const key = JSON.stringify([loc.lat, loc.lon, planes]);
+  // erste Reihe = Bezugsfläche (Süd, 35°) für die allgemeine Prognose am Ort, danach die eigenen Flächen
+  const planes = [{ name: 'Bezug Süd', tilt: 35, azimuth: 0 }, ...userPlanes.map(p => ({ tilt: p.tilt, azimuth: p.azimuth }))];
+  const key = JSON.stringify([loc.lat.toFixed(2), loc.lon.toFixed(2), planes]);
   const [pv, hd] = await Promise.all([
-    state.pv?.key === key && Date.now() - state.pv.at < 30 * MIN ? state.pv : fetchPvPerKwp(loc, planes).then(x => ({ ...x, key })).catch(() => null),
+    state.pv?.key === key && Date.now() - state.pv.at < 30 * MIN ? state.pv
+      : fetchPvPerKwp(loc, planes).then(x => ({ ...x, key })).catch(e => { state.pvErr = String(e?.message || e); return null; }),
     home && state.homeData && Date.now() - state.homeAt < 10 * MIN ? state.homeData : fetchPlace(loc, false),
   ]);
   if (pv) state.pv = pv;
   if (home && hd) { state.homeData = state.homeData && state.homeData.current ? state.homeData : hd; state.homeAt = state.homeAt || Date.now(); }
 
-  // ---- PV-Tabelle je Fläche ----
-  let pvHtml = '<div class="card error">PV-Prognose nicht verfügbar.</div>';
+  let pvHtml = `<section class="card"><div class="h2">PV-Prognose</div><p class="error" style="margin:0">${
+    /429/.test(state.pvErr || '') ? 'Tageslimit des Vorhersagedienstes erreicht – ab morgen wieder verfügbar.' : 'PV-Prognose gerade nicht verfügbar.'}</p></section>`;
   if (pv) {
     const sum = (s, a, b) => pv.times.reduce((acc, t, i) => t > a && t <= b ? acc + s[i] * 0.25 : acc, 0);
-    const dN = new Date(dayStart(2)).toLocaleDateString(de, { weekday: 'short' }).replace('.', '');
-    const rows = planes.map((p, k) => {
-      const c = PV_COLORS[k % PV_COLORS.length];
-      const az = p.azimuth ?? 0, azTxt = az === 0 ? 'S' : Math.abs(az) === 180 ? 'N' : `${az < 0 ? 'O' : 'W'}${Math.abs(az) !== 90 ? (Math.abs(az) < 90 ? '·S' : '·N') : ''}`;
-      return `<div class="pv-tr"><span class="nm"><i style="background:${c}"></i><span>${esc(p.name || `Fläche ${k + 1}`)} <span class="muted" style="font-size:11px">${p.tilt ?? 30}° · ${azTxt}</span></span></span>
-        <span>${r2(sum(pv.series[k], dayStart(0), dayStart(1)))}</span><span class="mid">${r2(sum(pv.series[k], dayStart(1), dayStart(2)))}</span><span>${r2(sum(pv.series[k], dayStart(2), dayStart(3)))}</span></div>`;
-    }).join('');
-    // Kurven für morgen
-    const sel = pv.times.map((t, i) => [t, i]).filter(([t]) => t > dayStart(1) + 6 * 36e5 && t <= dayStart(1) + 18 * 36e5);
-    const maxV = Math.max(0.05, ...pv.series.flatMap(s => sel.map(([, i]) => s[i])));
-    const W = 330, H = 80, x = j => j / (sel.length - 1) * W, y = v => H - 4 - v / maxV * (H - 10);
-    const paths = pv.series.map((s, k) => {
-      const c = PV_COLORS[k % PV_COLORS.length];
-      const d = sel.map(([, i], j) => `${j ? 'L' : 'M'}${x(j).toFixed(1)} ${y(s[i]).toFixed(1)}`).join(' ');
-      return `<path d="${d}" stroke="${c}" stroke-width="${k ? 2 : 2.4}" fill="none"/>`;
-    }).join('');
+    const days = [0, 1, 2].map(k => [dayStart(k), dayStart(k + 1)]);
+    const dayNames = ['Heute', 'Morgen', new Date(dayStart(2)).toLocaleDateString(de, { weekday: 'long' })];
     const now = Date.now(), nowI = pv.times.findIndex(t => t >= now);
-    const nowSum = nowI >= 0 ? pv.series.map(s => s[nowI]) : [];
-    pvHtml = `<section class="card" aria-label="PV-Prognose">
-      <div class="row-between"><div class="h2" style="margin:0">PV-Prognose · pro 1 kWp</div><span style="font-size:11px;color:var(--muted)">kWh je kWp</span></div>
-      ${demo ? '<p class="hint" style="margin:6px 0 0">Beispiel für eine Südfläche (35°). Lege deine Flächen unter „Mehr → PV-Anlage“ an.</p>' : ''}
-      <div class="pv-table" style="margin-top:8px">
-        <div class="pv-tr head"><span>Fläche</span><span>Heute</span><span>Morgen</span><span>${dN}</span></div>${rows}
-      </div>
-      <div class="row-between" style="margin-top:10px"><div style="font-size:11px;font-weight:600;color:var(--soft)">Morgen im Tagesverlauf</div><div style="font-size:10px;color:var(--muted)">kW je kWp · max ${r2(maxV)}</div></div>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:84px;margin-top:4px" role="img" aria-label="PV-Leistung morgen je Fläche">
-        <line x1="0" y1="${H - 4}" x2="${W}" y2="${H - 4}" stroke="#273244"/><line x1="${W / 2}" y1="0" x2="${W / 2}" y2="${H - 4}" stroke="#273244" stroke-dasharray="3 3"/>${paths}
-      </svg>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)"><span>6</span><span>9</span><span>12</span><span>15</span><span>18 Uhr</span></div>
-      <p class="hint">Ertrag einer Fläche = Wert × deren kWp.${nowSum.length ? ` Jetzt: ${nowSum.map(v => `${r0(v * 1000)} W`).join(' / ')} je kWp.` : ''}</p>
+
+    // ---- 1. Allgemein am Ort, pro 1 kWp (Bezugsfläche) ----
+    const ref = pv.series[0];
+    const general = `<section class="card" aria-label="PV-Prognose am Ort">
+      <div class="row-between"><div class="h2" style="margin:0">PV-Prognose am Ort · pro 1 kWp</div></div>
+      <p class="hint" style="margin:2px 0 8px">Bezug: Süddach mit 35° Neigung</p>
+      <div class="tiles3">${days.map(([a, b], k) => `<div class="tile"><small>${dayNames[k]}</small><b${k === 1 ? ' style="color:var(--accent)"' : ''}>${r2(sum(ref, a, b))}</b> <small style="display:inline">kWh/kWp</small></div>`).join('')}</div>
+      <div style="margin-top:10px">${pvChart(pv, loc, [{ v: ref, color: '#f6c343', width: 2.2, fill: true }], { unit: 'kW je kWp', fmt: v => r2(v), label: 'PV-Leistung pro kWp für heute, morgen und übermorgen' })}</div>
+      ${nowI >= 0 ? `<p class="hint" style="margin:6px 0 0">Jetzt: ${r0(ref[nowI] * 1000)} W je kWp</p>` : ''}
     </section>`;
+
+    // ---- 2. Eigene Anlage: Leistung in kW je Fläche (mit kWp und WR-Limit) und Gesamtertrag ----
+    let own;
+    if (userPlanes.length) {
+      const kw = userPlanes.map((p, k) => pv.series[k + 1].map(v => { const x = v * (p.kwp || 0); return p.limit > 0 ? Math.min(x, p.limit) : x; }));
+      const total = pv.times.map((_, i) => kw.reduce((s, a) => s + a[i], 0));
+      const kwpSum = userPlanes.reduce((s, p) => s + (p.kwp || 0), 0);
+      const col = k => PV_COLORS[(k + 1) % PV_COLORS.length];
+      const rows = userPlanes.map((p, k) => `<div class="pv-tr"><span class="nm"><i style="background:${col(k)}"></i><span>${esc(p.name || `Fläche ${k + 1}`)} <span class="muted" style="font-size:11px">${p.kwp ? `${r1(p.kwp)} kWp` : 'kWp fehlt'}</span></span></span>
+        ${days.map(([a, b], j) => `<span${j === 1 ? ' class="mid"' : ''}>${r1(sum(kw[k], a, b))}</span>`).join('')}</div>`).join('');
+      own = `<section class="card" aria-label="Deine PV-Anlage">
+        <div class="row-between"><div class="h2" style="margin:0">Deine Anlage · ${r1(kwpSum)} kWp</div><span style="font-size:11px;color:var(--muted)">erwarteter Ertrag</span></div>
+        <div class="tiles3" style="margin-top:8px">${days.map(([a, b], k) => `<div class="tile"><small>${dayNames[k]}</small><b${k === 1 ? ' style="color:var(--accent)"' : ''}>${r1(sum(total, a, b))}</b> <small style="display:inline">kWh</small></div>`).join('')}</div>
+        <div class="pv-table" style="margin-top:10px">
+          <div class="pv-tr head"><span>Fläche</span>${dayNames.map(n => `<span>${n.slice(0, 2)}.</span>`).join('')}</div>${rows}
+          <div class="pv-tr" style="font-weight:700"><span class="nm"><span>Gesamt</span></span>${days.map(([a, b], j) => `<span${j === 1 ? ' class="mid"' : ''}>${r1(sum(total, a, b))}</span>`).join('')}</div>
+        </div>
+        <div style="margin-top:10px">${pvChart(pv, loc, [{ v: total, color: '#f6c343', width: 2.4, fill: true }, ...kw.map((s, k) => ({ v: s, color: col(k), width: 1.6 }))],
+          { unit: 'kW (Gesamt gefüllt, Flächen als Linien)', fmt: v => `${r1(v)} kW`, label: 'Erwartete Leistung deiner Anlage in Kilowatt' })}</div>
+        ${nowI >= 0 ? `<p class="hint" style="margin:6px 0 0">Jetzt: ${r1(total[nowI])} kW · Werte in kWh, inkl. Wechselrichter-Limit</p>` : ''}
+      </section>`;
+    } else {
+      own = `<section class="card" aria-label="Deine PV-Anlage"><div class="h2">Deine Anlage</div>
+        <p style="margin:0 0 8px">Lege deine Flächen mit kWp, Neigung und Ausrichtung an, dann siehst du hier den erwarteten Ertrag in kWh.</p>
+        <button class="btn" onclick="showView('mehr')">Flächen anlegen</button></section>`;
+    }
+    pvHtml = general + own;
   }
 
   body.innerHTML = `<div class="row-between"><h1 class="h1" style="display:flex;align-items:center;gap:8px">${home ? ICO.home.replace('<svg', '<svg style="width:18px;height:18px;color:var(--muted)"') : ''}${esc(home ? 'Zuhause' : loc.name)}</h1></div>
