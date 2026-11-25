@@ -19,6 +19,10 @@ const mobileMap = {
     $('#btnLocate').onclick = () => this.center(activeLoc(), true);
     $('#chkMine').checked = config.showMine !== false;
     $('#chkMine').onchange = e => { config.showMine = e.target.checked; saveCfg(); this.drawMine(); };
+    // Quellenangabe: Antippen klappt auf/zu (Links darin bleiben anklickbar)
+    const attr = mapS.map.attributionControl.getContainer();
+    attr.title = 'Quellen anzeigen';
+    attr.addEventListener('click', e => { if (!e.target.closest('a')) attr.classList.toggle('open'); });
     const loc = activeLoc();
     mapS.map.setView(loc ? [loc.lat, loc.lon] : [51.2, 10.4], 6.5);
     loadSummaries().then(() => this.drawMine());

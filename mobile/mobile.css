@@ -129,6 +129,17 @@ svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; 
 .leaflet-control-zoom { display: none; }
 .leaflet-control-attribution { font-size: 9px; }
 .leaflet-container { font: inherit; background: #a9c8de; }
+/* Handy: Quellenangabe als eine schmale Zeile ganz unten, Antippen klappt sie vollständig auf */
+@media (max-width: 999px) {
+  .leaflet-bottom.leaflet-right { left: 0; right: 0; }
+  .leaflet-control-attribution { float: none !important; margin: 0 !important; width: 100%; box-sizing: border-box;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 18px; padding: 0 8px !important;
+    background: rgba(255, 255, 255, .88) !important; color: #333; cursor: pointer; }
+  .leaflet-control-attribution::before { content: 'ⓘ '; font-weight: 700; }
+  .leaflet-control-attribution.open { white-space: normal; padding: 6px 10px !important; line-height: 1.5; font-size: 11px; }
+  .mc-bar { bottom: 26px !important; }
+  .mc-legend { bottom: 150px !important; }
+}
 .mc { position: absolute; z-index: 800; color: #fff; border-radius: 14px; background: rgba(12, 36, 64, .9); box-shadow: 0 4px 16px rgba(0,0,0,.3); }
 .mc-time { top: calc(10px + env(safe-area-inset-top)); left: 10px; padding: 7px 12px 8px; min-width: 118px; }
 #mcTime { font: 700 24px/1.1 'Space Grotesk', sans-serif; }
