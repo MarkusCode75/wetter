@@ -17,6 +17,10 @@ const mobileMap = {
     $('#layerClose').onclick = closeLayerSheet;
     $('#layerBackdrop').onclick = closeLayerSheet;
     $('#btnLocate').onclick = () => this.center(activeLoc(), true);
+    // Regler: Wolken-Deckkraft (20–100 %)
+    const op = $('#cloudOp'), opv = $('#cloudOpVal');
+    op.value = config.cloudOpacityPct ?? 100; opv.textContent = `${op.value} %`;
+    op.addEventListener('input', () => { opv.textContent = `${op.value} %`; setCloudOpacity(+op.value); });
     $('#chkMine').checked = config.showMine !== false;
     $('#chkMine').onchange = e => { config.showMine = e.target.checked; saveCfg(); this.drawMine(); };
     // Quellenangabe: Antippen klappt auf/zu (Links darin bleiben anklickbar)

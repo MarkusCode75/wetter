@@ -40,6 +40,7 @@ const LAYERS = [
   ['wind', '🌬️', 'Wind (km/h) – Strömung und Stärke, DWD ICON'],
   ['solar', '☀️', 'Sonneneinstrahlung (W/m²) – „Jetzt“ aus Satellit, sonst DWD ICON'],
   ['sat', '🛰️', 'Satellit in Echtfarben (nur „Jetzt“)'],
+  ['ghost', '🗺️', 'Karte durchscheinen – Grenzen, Flüsse und Orte über den Wolken'],
 ];
 
 const pack = c => ((c[3] ?? 255) << 24 | c[2] << 16 | c[1] << 8 | c[0]) >>> 0;
@@ -77,23 +78,32 @@ function setBasemap() {
     ];
   }
   mapS.base[0].getContainer().style.filter = isDark() ? 'brightness(.8) saturate(1.1)' : 'saturate(1.1)';
+  // Zweite, schwache Kopie der Karte ÜBER den Wolken („multiplizieren“): Weiß bleibt weiß, dunkle Linien und
+  // Schrift (Grenzen, Flüsse, Orte) scheinen durch. Gleiche Kachel-Adressen → kommen aus dem Browser-Speicher.
+  if (!mapS.ghost) {
+    mapS.ghost = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 13, pane: 'ghost', opacity: 0.25,
+    });
+  }
 }
 
 function initMap() {
-  mapS.layers = Object.assign({ clouds: true, precip: true, temp: false, wind: false, solar: false, symbols: true, lightning: false, warn: false, sat: false }, config.mapLayers || {});
+  mapS.layers = Object.assign({ clouds: true, precip: true, temp: false, wind: false, solar: false, symbols: true, lightning: false, warn: false, sat: false, ghost: true }, config.mapLayers || {});
   const map = L.map('map', { minZoom: 4, maxZoom: 12, zoomSnap: 0.5, zoomControl: false }).setView([51.2, 10.4], 6);
   mapS.map = map;
   L.control.zoom({ position: 'topright' }).addTo(map);
   const pane = (n, z) => { const p = map.createPane(n); p.style.zIndex = z; p.style.pointerEvents = 'none'; };
-  pane('temp', 330); pane('wind', 332); pane('solar', 335); pane('clouds', 340); pane('precip', 360); pane('warn', 380); pane('labels', 450);
+  pane('temp', 330); pane('wind', 332); pane('solar', 335); pane('clouds', 340); pane('ghost', 350); pane('precip', 360); pane('warn', 380); pane('labels', 450);
+  map.getPane('ghost').style.mixBlendMode = 'multiply';
   setBasemap();
   // Quellen der Wetterebenen (Lizenzhinweise)
   map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
   map.attributionControl.addAttribution('Wetter: <a href="https://www.dwd.de">Deutscher Wetterdienst</a> (verändert), <a href="https://open-meteo.com">Open-Meteo</a> · Satellit: © <a href="https://www.eumetsat.int">EUMETSAT</a> (verändert)');
   initWindAnim();
 
-  for (const k of ['temp', 'wind', 'solar', 'clouds', 'precip']) {
-    mapS.overlays[k] = L.imageOverlay('data:image/gif;base64,R0lGODlhAQABAAAAACw=', [[0, 0], [0.1, 0.1]], { pane: k, opacity: 0, interactive: false }).addTo(map);
+  for (const k of ['temp', 'wind', 'solar', 'cloudsModel', 'clouds', 'precip']) {
+    // „cloudsModel“: Modell-Bewölkung, in die die hochgerechneten Satellitenwolken überblenden (gleiche Ebene wie die Wolken)
+    mapS.overlays[k] = L.imageOverlay('data:image/gif;base64,R0lGODlhAQABAAAAACw=', [[0, 0], [0.1, 0.1]], { pane: k === 'cloudsModel' ? 'clouds' : k, opacity: 0, interactive: false }).addTo(map);
   }
   mapS.warn = L.tileLayer.wms(DWD_WMS_URL, { layers: 'dwd:Warnungen_Gemeinden_vereinigt', format: 'image/png', transparent: true, opacity: .55, pane: 'warn', attribution: 'Warnungen: DWD' });
   mapS.lightning = L.tileLayer.wms(DWD_WMS_URL, { layers: 'dwd:Blitzdichte', format: 'image/png', transparent: true, pane: 'warn', attribution: 'Blitze: DWD' });
@@ -108,15 +118,13 @@ function initMap() {
   let t;
   map.on('moveend', () => {
     clearTimeout(t);
-    t = setTimeout(() => { updateCities(mapS.frames[mapS.idx]?.t); if (mapS.range === 'now') { prefetchSat(); showFrame(mapS.idx); } }, 350);
+    t = setTimeout(() => { updateCities(mapS.frames[mapS.idx]?.t); if (mapS.range === 'now') { prefetchSat(); showFrame(mapS.idx).then(prefetchCloudForecast); } }, 350);
   });
   let hv;
   map.on('mousemove', e => { if (!mapS.layers.solar) return; clearTimeout(hv); hv = setTimeout(() => { solarHover = e.latlng; updateSolarReadout(); }, 60); });
   map.on('mouseout', () => { solarHover = null; updateSolarReadout(); });
   map.on('zoomend', () => {
     updateCities(mapS.frames[mapS.idx]?.t);
-    const o = mapS.overlays.clouds;
-    if (o.options.opacity > 0) o.setOpacity(cloudOpacity());
   });
   bindMapUI();
   applyLayerToggles();
@@ -428,9 +436,10 @@ function satImage(t, color) {
         d[i + 3] = Math.round(cloud * (0.1 + 0.85 * op) * 255);
       }
       m.ctx.putImageData(m.img, 0, 0);
+      const rgba = new Uint8ClampedArray(d);                 // fertige Wolkenpixel – für die Wolkenzug-Hochrechnung
       const c2 = document.createElement('canvas'); c2.width = m.c.width; c2.height = m.c.height;
       const x2 = c2.getContext('2d'); x2.filter = 'blur(1.2px)'; x2.drawImage(m.c, 0, 0);   // weichere Wolkenränder
-      return { url: URL.createObjectURL(await new Promise(r => c2.toBlob(r, 'image/png'))), cov, W, H, b };
+      return { url: URL.createObjectURL(await new Promise(r => c2.toBlob(r, 'image/png'))), cov, rgba, W, H, b, satT: st };
     })();
     p.catch(() => mapS.satImg.delete(url));
     mapS.satImg.set(url, p);
@@ -509,6 +518,104 @@ function solarValueAt(latlng) {
   const i = Math.floor((p.x - sw.x) / (ne.x - sw.x) * f.W), j = Math.floor((ne.y - p.y) / (ne.y - sw.y) * f.H);
   return i >= 0 && j >= 0 && i < f.W && j < f.H ? f.ghi[j * f.W + i] : null;
 }
+/* ======================= Wolkenzug: Satellitenwolken in die Zukunft hochrechnen ======================= */
+// Aus den beiden neuesten Satellitenbildern wird je Kartenbereich die Zugrichtung ermittelt (Blockvergleich),
+// danach wird das letzte Bild entlang dieses Bewegungsfelds weitergeschoben. Später blendet es ins Modell über.
+const cloudFc = { key: null, motion: null, imgs: new Map(), busy: null };
+const CLOUD_FC_PURE = 30 * MIN, CLOUD_FC_BLEND = 90 * MIN;   // 30 Min. reine Hochrechnung, dann 90 Min. Übergang ins Modell
+const cloudBlendAt = t => { const L = mapS.sat?.clm?.latest; return L == null ? 0 : clamp((t - L - CLOUD_FC_PURE) / CLOUD_FC_BLEND, 0, 1); };
+const isCloudFuture = t => { const s = mapS.sat?.clm; return !!s && t > s.latest + s.period / 2; };
+
+async function cloudMotion() {
+  const s = mapS.sat?.clm; if (!s) return null;
+  // Vergleich mit dem Bild von vor 30 Min. (2 Bildabstände): größere Verschiebung → genauer messbar
+  const gapT = 2 * s.period;
+  const [cur, prev] = await Promise.all([satImage(s.latest, false), satImage(s.latest - gapT, false)]);
+  const A = prev?.field, C = cur?.field;
+  if (!A?.cov || !C?.cov || A.W !== C.W || A.H !== C.H) return null;
+  const key = `${cur.url}|${prev.url}`;
+  if (cloudFc.key === key) return cloudFc.motion;
+  // neues Bewegungsfeld → alte Hochrechnungen verwerfen
+  cloudFc.imgs.forEach(p => p.then(r => r && URL.revokeObjectURL(r.url)).catch(() => {})); cloudFc.imgs.clear();
+
+  const { W, H, b } = C, crs = L.CRS.EPSG3857;
+  const mpp = (crs.project(b.getNorthEast()).x - crs.project(b.getSouthWest()).x) / W;      // Meter je Bildpunkt
+  const Rfull = clamp(Math.ceil(140000 * (gapT / 36e5) / mpp), 2, 120);                     // max. ~140 km/h Wolkenzug
+  const f = Math.max(1, Math.ceil(Rfull / 10)), w = Math.floor(W / f), h = Math.floor(H / f), R = Math.ceil(Rfull / f);
+  const down = cov => { const o = new Float32Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let sum = 0; for (let j = 0; j < f; j++) for (let i = 0; i < f; i++) sum += cov[(y * f + j) * W + x * f + i]; o[y * w + x] = sum / (f * f); } return o; };
+  const a = down(A.cov), c = down(C.cov);
+  const BS = Math.max(8, Math.round(Math.min(w, h) / 5)), bx = Math.ceil(w / BS), by = Math.ceil(h / BS);
+  const vx = new Float32Array(bx * by), vy = new Float32Array(bx * by), ok = new Uint8Array(bx * by);
+  for (let J = 0; J < by; J++) for (let I = 0; I < bx; I++) {
+    const x0 = I * BS, y0 = J * BS, x1 = Math.min(w, x0 + BS), y1 = Math.min(h, y0 + BS);
+    let m = 0, m2 = 0, n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const v = c[y * w + x]; m += v; m2 += v * v; n++; }
+    if (!n || m2 / n - (m / n) ** 2 < 0.003) continue;                // zu wenig Struktur → Bewegung nicht bestimmbar
+    let best = Infinity, bdx = 0, bdy = 0;
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      let sad = 0, cnt = 0;
+      for (let y = y0; y < y1; y += 2) { const sy = y - dy; if (sy < 0 || sy >= h) continue;
+        for (let x = x0; x < x1; x += 2) { const sx = x - dx; if (sx < 0 || sx >= w) continue; sad += Math.abs(c[y * w + x] - a[sy * w + sx]); cnt++; } }
+      if (cnt > n / 8) { sad /= cnt; if (sad < best || (sad === best && dx * dx + dy * dy < bdx * bdx + bdy * bdy)) { best = sad; bdx = dx; bdy = dy; } }
+    }
+    vx[J * bx + I] = bdx * f; vy[J * bx + I] = bdy * f; ok[J * bx + I] = 1;   // Verschiebung in Bildpunkten je Bildabstand
+  }
+  // unsichere Blöcke mit dem Median der sicheren füllen, dann glätten
+  const med = arr => { const s2 = arr.slice().sort((p, q) => p - q); return s2.length ? s2[s2.length >> 1] : 0; };
+  const gx = med([...vx].filter((_, i) => ok[i])), gy = med([...vy].filter((_, i) => ok[i]));
+  for (let i = 0; i < vx.length; i++) if (!ok[i]) { vx[i] = gx; vy[i] = gy; }
+  const sm = (v) => { const o = new Float32Array(v.length); for (let J = 0; J < by; J++) for (let I = 0; I < bx; I++) {
+    let s3 = 0, n3 = 0; for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const II = I + i, JJ = J + j; if (II < 0 || JJ < 0 || II >= bx || JJ >= by) continue; s3 += v[JJ * bx + II]; n3++; }
+    o[J * bx + I] = s3 / n3; } return o; };
+  cloudFc.key = key;
+  cloudFc.motion = { bx, by, BS: BS * f, vx: sm(vx), vy: sm(vy), field: C, latest: s.latest, period: gapT };   // Verschiebung je 30 Min.
+  return cloudFc.motion;
+}
+
+function cloudForecast(t) {
+  return cloudMotion().then(m => {
+    if (!m) return null;
+    const step = Math.round((t - m.latest) / (5 * MIN)), key = `${cloudFc.key}|${step}`;
+    if (!cloudFc.imgs.has(key)) {
+      cloudFc.imgs.set(key, (async () => {
+        const { W, H, rgba, b } = m.field, k = (step * 5 * MIN) / m.period;      // Anzahl Bildabstände in die Zukunft
+        const c = document.createElement('canvas'); c.width = W; c.height = H;
+        const ctx = c.getContext('2d'), img = ctx.createImageData(W, H), o = img.data;
+        const { bx, by, BS, vx, vy } = m;
+        const at = (arr, ii, jj) => arr[clamp(jj, 0, by - 1) * bx + clamp(ii, 0, bx - 1)];
+        for (let y = 0; y < H; y++) {
+          const fy = clamp(y / BS - 0.5, 0, by - 1), J = Math.max(0, Math.min(by - 2, fy | 0)), wy = by > 1 ? fy - J : 0;
+          for (let x = 0; x < W; x++) {
+            const fx = clamp(x / BS - 0.5, 0, bx - 1), I = Math.max(0, Math.min(bx - 2, fx | 0)), wx = bx > 1 ? fx - I : 0;
+            const dx = (at(vx, I, J) * (1 - wx) + at(vx, I + 1, J) * wx) * (1 - wy) + (at(vx, I, J + 1) * (1 - wx) + at(vx, I + 1, J + 1) * wx) * wy;
+            const dy = (at(vy, I, J) * (1 - wx) + at(vy, I + 1, J) * wx) * (1 - wy) + (at(vy, I, J + 1) * (1 - wx) + at(vy, I + 1, J + 1) * wx) * wy;
+            const sx = Math.round(x - dx * k), sy = Math.round(y - dy * k), p = (y * W + x) * 4;
+            if (sx < 0 || sy < 0 || sx >= W || sy >= H) continue;           // von außerhalb nachrückend: unbekannt → leer
+            const q = (sy * W + sx) * 4; o[p] = rgba[q]; o[p + 1] = rgba[q + 1]; o[p + 2] = rgba[q + 2]; o[p + 3] = rgba[q + 3];
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+        const c2 = document.createElement('canvas'); c2.width = W; c2.height = H;
+        const x2 = c2.getContext('2d'); x2.filter = 'blur(1.2px)'; x2.drawImage(c, 0, 0);
+        return { url: URL.createObjectURL(await new Promise(r => c2.toBlob(r, 'image/png'))), bounds: b };
+      })());
+      if (cloudFc.imgs.size > 50) { const [k0, v0] = cloudFc.imgs.entries().next().value; cloudFc.imgs.delete(k0); v0.then(r => r && URL.revokeObjectURL(r.url)).catch(() => {}); }
+    }
+    return cloudFc.imgs.get(key);
+  });
+}
+
+// Hochrechnungen im Hintergrund vorbereiten, damit das Abspielen flüssig läuft
+async function prefetchCloudForecast() {
+  if (mapS.range !== 'now' || !mapS.layers.clouds || mapS.layers.sat) return;
+  const gen = (cloudFc.prefetchGen = (cloudFc.prefetchGen || 0) + 1);
+  for (const f of mapS.frames) {
+    if (gen !== cloudFc.prefetchGen || mapS.range !== 'now') return;
+    if (isCloudFuture(f.t) && cloudBlendAt(f.t) < 1) { try { await cloudForecast(f.t); } catch { /* weiter */ } }
+  }
+}
+
 function prefetchSat() {
   if (mapS.range !== 'now' || !(mapS.layers.clouds || mapS.layers.solar) || !mapS.sat) return;
   const color = mapS.layers.sat && mapS.layers.clouds;
@@ -688,6 +795,7 @@ async function setRange(r, keepIdx) {
     : 'Vorhersage: DWD-ICON-Modell (über Open-Meteo), stündlich – Wolken, Niederschlag, Temperatur und Symbole';
   prefetchSat();
   await showFrame(mapS.idx);
+  prefetchCloudForecast();
 }
 
 function renderRangeTabs() {
@@ -710,7 +818,12 @@ async function showFrame(i) {
   badge.textContent = txt; badge.className = `badge ${cls}`;
   // Datenstand der Wolken anzeigen (Satellitenbilder sind 15–40 Min. alt)
   const satT = mapS.range === 'now' && (mapS.layers.clouds || mapS.layers.solar) ? satTimeFor(f.t, mapS.layers.sat && mapS.layers.clouds ? 'color' : 'clm') : null;
-  $('#mcSrc').textContent = satT != null ? `🛰 Satellit ${fmtTime(satT)} Uhr${f.t - satT > 20 * MIN ? ' (letztes Bild)' : ''}` : '';
+  // Wolken nach dem letzten Satellitenbild: hochgerechnet, später ins Modell überblendet (nicht bei Echtfarben)
+  const fcClouds = mapS.range === 'now' && mapS.layers.clouds && !mapS.layers.sat && isCloudFuture(f.t);
+  const blend = fcClouds ? cloudBlendAt(f.t) : 0;
+  $('#mcSrc').textContent = satT == null ? ''
+    : fcClouds ? `☁ Wolken hochgerechnet (Satellit ${fmtTime(satT)})${blend > 0 && mapS.grid ? ` · ${Math.round(blend * 100)} % Modell` : ''}`
+    : `🛰 Satellit ${fmtTime(satT)} Uhr${f.t - satT > 20 * MIN ? ' (letztes Bild)' : ''}`;
   // Wind, Temperatur und die Folgetage brauchen das Modellraster – fehlt es (z. B. Tageslimit), sagen wir das
   if (!mapS.grid && (mapS.layers.wind || mapS.layers.temp || mapS.range !== 'now')) {
     $('#mcSrc').textContent = '⚠ Modelldaten gerade nicht verfügbar (Tageslimit Open-Meteo)';
@@ -723,8 +836,11 @@ async function showFrame(i) {
     temp: Ly.temp ? safe(renderGrid('temp', f.t)) : null,
     wind: Ly.wind ? safe(renderGrid('wind', f.t)) : null,
     clouds: Ly.clouds
-      ? (now ? safe(satImage(f.t, Ly.sat)).then(r => r || safe(renderGrid('clouds', f.t))) : safe(renderGrid('clouds', f.t)))
+      ? (now ? (fcClouds ? safe(cloudForecast(f.t)) : Promise.resolve(null)).then(r => r || safe(satImage(f.t, Ly.sat))).then(r => r || safe(renderGrid('clouds', f.t)))
+        : safe(renderGrid('clouds', f.t)))
       : null,
+    // Überblendung: hochgerechnete Satellitenwolken gehen nach und nach in die Modell-Bewölkung über
+    cloudsModel: Ly.clouds && fcClouds && blend > 0 && mapS.grid ? safe(renderGrid('clouds', f.t)) : null,
     precip: Ly.precip ? (now ? Promise.resolve(f.radar ? { url: f.radar.url, bounds: RAD.bounds } : null) : safe(renderGrid('precip', f.t))) : null,
     solar: Ly.solar
       ? (now ? safe(solarSat(f.t)) : Promise.resolve(null)).then(r => r || (mapS.grid ? (
@@ -737,11 +853,13 @@ async function showFrame(i) {
   for (const k of Object.keys(jobs)) res[k] = jobs[k] ? await jobs[k] : null;
   if (tok !== mapS.token) return;
   $('#frameLoad').textContent = '';
-  const opac = { temp: 1, wind: 1, solar: 1, clouds: cloudOpacity(), precip: 1 };
+  const w = res.cloudsModel ? blend : 0;
+  mapS.cloudBlend = w;
+  const opac = { temp: 1, wind: 1, solar: 1, cloudsModel: cloudOpacity() * w, clouds: cloudOpacity() * (1 - w), precip: 1 };
   if (!Ly.solar) mapS.solarField = null;
   updateSolarReadout();
   windAnim.setTime(Ly.wind ? f.t : null);
-  for (const k of ['temp', 'wind', 'solar', 'clouds', 'precip']) {
+  for (const k of ['temp', 'wind', 'solar', 'cloudsModel', 'clouds', 'precip']) {
     const o = mapS.overlays[k], r = res[k];
     if (!r) { o.setOpacity(0); continue; }
     o.setBounds(r.bounds); o.setUrl(r.url); o.setOpacity(opac[k]);
@@ -749,7 +867,15 @@ async function showFrame(i) {
 }
 
 // beim Hineinzoomen Wolken durchsichtiger, damit die Detailkarte sichtbar bleibt (Echtfarben-Satellit ausgenommen)
-const cloudOpacity = () => mapS.layers.sat && mapS.range === 'now' ? 1 : (mapS.map.getZoom() >= 9 ? 0.4 : 1);
+// Wolken-Deckkraft: auf allen Zoomstufen gleich, nur über den Regler „Wolken-Deckkraft“ (20–100 %) einstellbar.
+// (Früher wurde ab Zoom 9 automatisch abgeschwächt – das wirkte wie ein Sprung und ist dank „Karte durchscheinen“ unnötig.)
+const cloudOpacity = () => clamp((config.cloudOpacityPct ?? 100) / 100, 0.2, 1);
+function setCloudOpacity(pct) {
+  config.cloudOpacityPct = pct; saveCfg();
+  const o = mapS.overlays.clouds, m = mapS.overlays.cloudsModel, w = mapS.cloudBlend || 0;
+  if (o && o.options.opacity > 0) o.setOpacity(cloudOpacity() * (1 - w));
+  if (m && m.options.opacity > 0) m.setOpacity(cloudOpacity() * w);
+}
 
 function updateCities(t) {
   const map = mapS.map, c = mapS.cities;
@@ -803,6 +929,8 @@ function applyLayerToggles() {
   document.querySelectorAll('#layerButtons button').forEach(b => b.classList.toggle('on', !!Ly[b.dataset.l]));
   Ly.warn ? mapS.warn.addTo(map) : map.removeLayer(mapS.warn);
   Ly.lightning ? mapS.lightning.addTo(map) : map.removeLayer(mapS.lightning);
+  // Durchscheinende Karte nur, wenn auch Wolken angezeigt werden (sonst würde sie die Karte nur abdunkeln)
+  (Ly.ghost !== false && Ly.clouds) ? mapS.ghost.addTo(map) : map.removeLayer(mapS.ghost);
   renderLegend();
 }
 
@@ -835,7 +963,7 @@ function bindMapUI() {
     config.mapLayers = mapS.layers; saveCfg();
     applyLayerToggles();
     if (k === 'sat') prefetchSat();
-    if (k !== 'warn' && k !== 'lightning') showFrame(mapS.idx);
+    if (k !== 'warn' && k !== 'lightning') showFrame(mapS.idx).then(() => { if (k === 'clouds' || k === 'sat') prefetchCloudForecast(); });
   });
   renderRangeTabs();
   $('#rangeTabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setRange(b.dataset.r); });

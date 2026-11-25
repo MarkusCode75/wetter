@@ -81,7 +81,12 @@
           <input type="checkbox" id="chkMine">
         </label>
         <div id="layerButtons" class="layer-list"></div>
-        <p class="hint">Temperatur und Sonneneinstrahlung blenden die Wolken automatisch aus.</p>
+        <label class="layer-row cloud-op">
+          <span class="layer-ico">☁</span>
+          <span class="layer-txt"><b>Wolken-Deckkraft <span id="cloudOpVal"></span></b>
+            <input type="range" id="cloudOp" min="20" max="100" step="5" aria-label="Wolken-Deckkraft in Prozent"></span>
+        </label>
+        <p class="hint">Temperatur, Wind und Sonneneinstrahlung blenden die Wolken automatisch aus.</p>
         <div id="modeTitle" class="hint"></div>
       </section>
     </section>
