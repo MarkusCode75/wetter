@@ -70,6 +70,8 @@ function wxKind(code, isDay = 1) {
   if (code >= 95) return 'thunder';
   return 'cloud';
 }
+const BS_TEXT = { 'clear-day': 'Klar', 'clear-night': 'Klar', 'partly-cloudy-day': 'Teilweise bewölkt', 'partly-cloudy-night': 'Teilweise bewölkt',
+  cloudy: 'Bewölkt', fog: 'Nebel', wind: 'Windig', rain: 'Regen', sleet: 'Schneeregen', snow: 'Schnee', hail: 'Hagel', thunderstorm: 'Gewitter' };
 const BS_KIND = { 'clear-day': 'sun', 'clear-night': 'moon', 'partly-cloudy-day': 'partly', 'partly-cloudy-night': 'partlyNight', cloudy: 'cloud', fog: 'fog', wind: 'cloud', rain: 'rain', sleet: 'snow', snow: 'snow', hail: 'rain', thunderstorm: 'thunder' };
 const CLOUD = 'M17.5 19H8a5 5 0 1 1 .9-9.9A6 6 0 0 1 20 11.5a3.75 3.75 0 0 1-2.5 7.5z';
 const CLOUD_S = 'M17.5 15H8a4.5 4.5 0 1 1 .8-8.9A5.5 5.5 0 0 1 19.5 8a3.5 3.5 0 0 1-2 7z';
@@ -264,7 +266,22 @@ const Moon = (() => {
     const toDate = h => h == null ? null : new Date(t.getTime() + h * 36e5);
     return { rise: toDate(rise), set: toDate(set) };
   }
-  return { illumination, times };
+  // Sonnenauf- und -untergang (Höhe −0,833° inkl. Refraktion), ohne Internet
+  function sunTimes(date, lat, lon) {
+    const lw = rad * -lon, phi = rad * lat, J0 = 0.0009;
+    const t = new Date(date); t.setHours(12, 0, 0, 0);
+    const d = toDays(t), n = Math.round(d - J0 - lw / (2 * Math.PI));
+    const approx = (Ht) => J0 + (Ht + lw) / (2 * Math.PI) + n;
+    const ds = approx(0), M = rad * (357.5291 + 0.98560028 * ds);
+    const L = M + rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)) + rad * 102.9372 + Math.PI;
+    const decl = dec(L, 0), transit = j => J2000 + j + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
+    const cosW = (Math.sin(-0.833 * rad) - Math.sin(phi) * Math.sin(decl)) / (Math.cos(phi) * Math.cos(decl));
+    if (cosW < -1 || cosW > 1) return { rise: null, set: null };          // Polartag / Polarnacht
+    const Jnoon = transit(ds), Jset = transit(approx(Math.acos(cosW))), Jrise = Jnoon - (Jset - Jnoon);
+    const fromJ = j => new Date((j + 0.5 - J1970) * dayMs);
+    return { rise: fromJ(Jrise), set: fromJ(Jset) };
+  }
+  return { illumination, times, sunTimes };
 })();
 function moonInfo(lat, lon) {
   const now = new Date(), il = Moon.illumination(now), tm = Moon.times(now, lat, lon);
@@ -280,7 +297,10 @@ function moonInfo(lat, lon) {
 /* ======================= Daten laden ======================= */
 async function settle(jobs) {
   const keys = Object.keys(jobs), res = await Promise.allSettled(Object.values(jobs)), out = {};
-  keys.forEach((k, i) => { out[k] = res[i].status === 'fulfilled' ? res[i].value : null; if (res[i].status === 'rejected') console.warn(k, res[i].reason); });
+  keys.forEach((k, i) => {
+    out[k] = res[i].status === 'fulfilled' ? res[i].value : null;
+    if (res[i].status === 'rejected') { console.warn(k, res[i].reason); out[`${k}Err`] = String(res[i].reason?.message || res[i].reason); }
+  });
   return out;
 }
 function fetchPlace(loc, full = true) {
@@ -319,6 +339,13 @@ async function loadActive(scrollTop = true) {
   if (loc.key === 'home') { state.homeData = d; state.homeAt = Date.now(); }
   renderLocTabs();
   renderWetter(loc, d);
+  // Messwert des angezeigten Orts auch für seine Stecknadel auf der Karte verwenden
+  const cw = d.current?.weather;
+  if (cw?.temperature != null) {
+    const prev = state.summary.get(loc.key) || {};
+    state.summary.set(loc.key, { ...prev, t: cw.temperature, kind: BS_KIND[cw.icon] || prev.kind || 'cloud', text: BS_TEXT[cw.icon] || prev.text || '', note: prev.note ?? '', tone: prev.tone ?? '' });
+    if (window.mobileMap?.ready) mobileMap.drawMine();
+  }
   if (scrollTop) $('#wetterScroll').scrollTop = 0;
   if (window.mobileMap?.ready) mobileMap.center(loc);
 }
@@ -405,15 +432,23 @@ function renderWetter(loc, d) {
   const h = fc?.hourly, dd = fc?.daily, i0 = h ? hourIndexNow(h.time) : 0;
   const isDay = om ? om.is_day === 1 : true;
   const kind = w?.icon ? (BS_KIND[w.icon] || 'cloud') : wxKind(om?.weather_code, isDay);
-  const cond = om ? (WMO_TEXT[om.weather_code] || '') : (w?.condition || '');
+  const cond = om ? (WMO_TEXT[om.weather_code] || '') : (BS_TEXT[w?.icon] || '');
   const temp = w?.temperature ?? om?.temperature_2m;
   const wdir = w?.wind_direction_10 ?? om?.wind_direction_10m, wspd = w?.wind_speed_10 ?? om?.wind_speed_10m, gust = w?.wind_gust_speed_10 ?? om?.wind_gusts_10m;
   const press = w?.pressure_msl ?? om?.pressure_msl, rh = w?.relative_humidity ?? om?.relative_humidity_2m, dew = w?.dew_point ?? h?.dew_point_2m?.[i0];
   const trend = h ? pressureTrend(h, i0) : '';
   const snowLikely = (temp ?? 5) <= 1;
+  // gefühlte Temperatur: vom Modell, sonst aus Messwerten (Windchill nach DWD/JAG-TI-Formel)
+  const feels = om?.apparent_temperature ?? (temp != null && wspd != null && temp <= 10 && wspd > 4.8
+    ? 13.12 + 0.6215 * temp - 11.37 * wspd ** 0.16 + 0.3965 * temp * wspd ** 0.16 : temp);
+  const sub = [`gefühlt ${deg(feels)}`];
+  if (dd?.temperature_2m_min?.[0] != null) sub.push(`↓ ${deg(dd.temperature_2m_min[0])} ↑ ${deg(dd.temperature_2m_max[0])}`);
+  const fcDown = !fc ? (/429/.test(d.fcErr || '') ? 'Das Tageslimit des Vorhersagedienstes ist für diese Internetverbindung erreicht – ab morgen wieder verfügbar.'
+    : 'Der Vorhersagedienst ist gerade nicht erreichbar.') : '';
 
-  // Sonne & Mond
-  const sr = dd?.sunrise?.[0], ss = dd?.sunset?.[0];
+  // Sonne & Mond (Sonnenzeiten notfalls selbst berechnet)
+  const st = Moon.sunTimes(new Date(), loc.lat, loc.lon);
+  const sr = dd?.sunrise?.[0] ?? st.rise, ss = dd?.sunset?.[0] ?? st.set;
   const dayLen = sr && ss ? (new Date(ss) - new Date(sr)) / MIN : null;
   const mi = moonInfo(loc.lat, loc.lon);
 
@@ -471,7 +506,7 @@ function renderWetter(loc, d) {
       <div style="min-width:0">
         <div class="temp">${deg(temp)}</div>
         <div class="cond">${esc(cond)}</div>
-        <div class="line" style="color:var(--muted)">gefühlt ${deg(om?.apparent_temperature)} · ↓ ${deg(dd?.temperature_2m_min?.[0])} ↑ ${deg(dd?.temperature_2m_max?.[0])}</div>
+        <div class="line" style="color:var(--muted)">${sub.join(' · ')}</div>
         <div class="line">${windArrow(wdir, `Wind aus ${dirName(wdir)}`)}Wind ${r0(wspd)} km/h aus ${dirName(wdir)}${gust ? ` · Böen ${r0(gust)}` : ''}</div>
         <div class="line"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.gauge}</svg>${r0(press)} hPa${trend ? ` <span class="muted">· ${trend}</span>` : ''}</div>
         <div class="line"><svg viewBox="0 0 24 24" aria-hidden="true">${ICO.drop}</svg>Feuchte ${r0(rh)} %${dew != null ? ` <span class="muted">· Taupunkt ${r1(dew)}°</span>` : ''}</div>
@@ -490,15 +525,17 @@ function renderWetter(loc, d) {
     ${warnHtml}
     ${nowcastHtml(d, snowLikely)}
 
+    ${fcDown ? `<section class="card" aria-label="Vorhersage nicht verfügbar"><div class="h2">Vorhersage</div>
+      <p style="margin:0">${fcDown}</p><p class="hint" style="margin:6px 0 0">Messwerte, Warnungen und Radar kommen weiter direkt vom DWD.</p></section>` : `
     <section class="card" aria-label="Stündlich" style="padding:10px 4px 10px 10px">
-      <div class="row-between" style="padding-right:10px;margin-bottom:4px"><div class="h2" style="margin:0">Stündlich</div><div style="font-size:10px;color:var(--muted)">unten: Wind · Feuchte · Druck hPa</div></div>
+      <div class="row-between" style="padding-right:10px;margin-bottom:6px"><div class="h2" style="margin:0">Stündlich</div><div style="font-size:10px;color:var(--muted)">unten: Wind · Feuchte · Druck hPa</div></div>
       <div class="hours">${hours}</div>
     </section>
 
     <section class="card" aria-label="Nächste Tage">
       <div class="h2">Nächste Tage</div>
       ${days}
-    </section>
+    </section>`}
     <p class="hint">Stand ${fmtTime(state.loadedAt || Date.now())} · Quelle: Deutscher Wetterdienst, Wetterdaten von Open-Meteo.com · ohne Gewähr</p>`;
 }
 
@@ -508,11 +545,13 @@ async function loadSummaries(force) {
   if (!locs.length) return;
   if (!force && Date.now() - state.summaryAt < 10 * MIN && locs.every(l => state.summary.has(l.key))) return;
   const lat = locs.map(l => l.lat.toFixed(2)).join(','), lon = locs.map(l => l.lon.toFixed(2)).join(',');
+  const alertsP = Promise.all(locs.map(l => l.key.startsWith('fav') ? getJSON(`https://api.brightsky.dev/alerts?lat=${l.lat.toFixed(2)}&lon=${l.lon.toFixed(2)}`).catch(() => null) : null));
+  const warnNote = a => { const al = (a?.alerts || []).filter(x => !x.expires || new Date(x.expires) > Date.now()); return al.length ? `${titleCase(al[0].event_de || 'Warnung')}${al[0].expires ? ` bis ${fmtWdTime(al[0].expires)}` : ''}` : null; };
   try {
     const r = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&models=icon_seamless&timezone=Europe%2FBerlin&forecast_days=2&` +
       q({ current: 'temperature_2m,weather_code,is_day', daily: 'temperature_2m_min,temperature_2m_max', hourly: 'precipitation,snowfall,wind_gusts_10m' }));
     const arr = Array.isArray(r) ? r : [r];
-    const alerts = await Promise.all(locs.map(l => l.key.startsWith('fav') ? getJSON(`https://api.brightsky.dev/alerts?lat=${l.lat.toFixed(2)}&lon=${l.lon.toFixed(2)}`).catch(() => null) : null));
+    const alerts = await alertsP;
     const now = Date.now();
     locs.forEach((l, k) => {
       const x = arr[k]; if (!x) return;
@@ -529,8 +568,22 @@ async function loadSummaries(force) {
       state.summary.set(l.key, { t: x.current.temperature_2m, code: x.current.weather_code, isDay: x.current.is_day, min: x.daily.temperature_2m_min[0], max: x.daily.temperature_2m_max[0], note, tone });
     });
     state.summaryAt = Date.now();
-  } catch (e) { console.warn('Übersicht', e); }
+  } catch (e) {
+    // Ersatz, wenn Open-Meteo nicht antwortet (z. B. Tageslimit): Messwerte der nächsten DWD-Station über Bright Sky
+    console.warn('Übersicht: Ersatz über DWD-Messwerte', e);
+    const [alerts, cur] = await Promise.all([alertsP, Promise.all(locs.map(l =>
+      getJSON(`https://api.brightsky.dev/current_weather?lat=${l.lat.toFixed(2)}&lon=${l.lon.toFixed(2)}`).catch(() => null)))]);
+    locs.forEach((l, k) => {
+      const w = cur[k]?.weather; if (!w) return;
+      const wn = warnNote(alerts[k]);
+      state.summary.set(l.key, { t: w.temperature, kind: BS_KIND[w.icon] || 'cloud', text: BS_TEXT[w.icon] || '', min: null, max: null,
+        note: wn || 'Messwert der nächsten DWD-Station', tone: wn ? 'warn-t' : '' });
+    });
+    state.summaryAt = Date.now() - 7 * MIN;    // bald erneut versuchen
+  }
 }
+// Symbol für eine Kurzübersicht (Modellcode oder DWD-Messung)
+const summaryKind = s => s.kind || wxKind(s.code, s.isDay);
 
 function renderFavs() {
   renderLocTabs();
@@ -542,7 +595,7 @@ function renderFavs() {
     const s = state.summary.get(`fav:${f.id}`);
     const right = state.favEditing
       ? `<span class="icon-round" data-up="${i}" role="button" aria-label="${esc(f.name)} nach oben">↑</span><span class="icon-round" data-down="${i}" role="button" aria-label="${esc(f.name)} nach unten">↓</span><span class="icon-round" data-del="${i}" role="button" aria-label="${esc(f.name)} entfernen" style="color:#ff9a9a">✕</span>`
-      : `${s ? icon(wxKind(s.code, s.isDay), 'ico', WMO_TEXT[s.code]) : '<span></span>'}<div class="tt"><b>${s ? deg(s.t) : '…'}</b><small>${s ? `<span style="color:var(--cold)">${deg(s.min)}</span> / <span style="color:var(--warm)">${deg(s.max)}</span>` : ''}</small></div>`;
+      : `${s ? icon(summaryKind(s), 'ico', s.text || WMO_TEXT[s.code]) : '<span></span>'}<div class="tt"><b>${s ? deg(s.t) : '…'}</b><small>${s && s.min != null ? `<span style="color:var(--cold)">${deg(s.min)}</span> / <span style="color:var(--warm)">${deg(s.max)}</span>` : ''}</small></div>`;
     return `<button class="fav ${state.favEditing ? 'editing' : ''}" data-open="${f.id}">
       <div style="min-width:0"><div class="nm">${esc(f.name)}</div><div class="rg">${esc(f.region || '')}</div><div class="nt ${s?.tone || ''}">${s ? esc(s.note) : 'Lädt …'}</div></div>
       ${right}</button>`;

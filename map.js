@@ -131,8 +131,49 @@ function updateMarkers() {
 }
 
 /* ======================= Modelldaten (Raster + Städte) ======================= */
+// Kleiner Speicher im Browser (IndexedDB): das Modellraster kostet ~400 Open-Meteo-Abfragen,
+// deshalb wird es 3 Stunden lang wiederverwendet – auch über Neustarts der App hinweg.
+const GRID_STORE = {
+  db: null,
+  open() {
+    if (this.db) return Promise.resolve(this.db);
+    return new Promise(res => {
+      try {
+        const r = indexedDB.open('wetter-cache', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('kv');
+        r.onsuccess = () => { this.db = r.result; res(this.db); };
+        r.onerror = () => res(null);
+      } catch { res(null); }
+    });
+  },
+  async get(k) {
+    const db = await this.open(); if (!db) return null;
+    return new Promise(res => { try { const t = db.transaction('kv').objectStore('kv').get(k); t.onsuccess = () => res(t.result || null); t.onerror = () => res(null); } catch { res(null); } });
+  },
+  async set(k, v) { const db = await this.open(); if (!db) return; try { db.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch { /* egal */ } },
+};
+const GRID_KEY = `grid-v2-${GRID.lat0}-${GRID.lon0}-${GRID.step}`;
+const GRID_MAX_AGE = 3 * 60 * MIN;
+
 async function loadModelData(force) {
-  if (!force && mapS.grid && Date.now() - mapS.grid.at < 3 * 60 * MIN) return;
+  if (!force && mapS.grid && Date.now() - mapS.grid.at < GRID_MAX_AGE) return;
+  const cached = await GRID_STORE.get(GRID_KEY);
+  if (cached?.grid?.wu && Date.now() - cached.grid.at < GRID_MAX_AGE) { useGrid(cached.grid, cached.cities); return; }
+  try {
+    await fetchModelData();
+    GRID_STORE.set(GRID_KEY, { grid: mapS.grid, cities: mapS.cities });
+  } catch (e) {
+    // z. B. Tageslimit erreicht: lieber ein älteres Raster (bis 24 h) zeigen als gar keins
+    if (cached?.grid?.wu && Date.now() - cached.grid.at < 24 * 60 * MIN) { useGrid(cached.grid, cached.cities); console.warn('Modellraster: verwende gespeicherte Daten', e); }
+    else throw e;
+  }
+}
+function useGrid(grid, cities) {
+  mapS.grid = grid; mapS.cities = cities;
+  mapS.gridImg.forEach(u => URL.revokeObjectURL(u)); mapS.gridImg.clear();
+}
+
+async function fetchModelData() {
   const lats = [], lons = [];
   for (let a = 0; a < GRID.nLat; a++) for (let b = 0; b < GRID.nLon; b++) { lats.push(String(GRID.lat0 + a * GRID.step)); lons.push(String(GRID.lon0 + b * GRID.step)); }
   // Kommas nicht kodieren und in Pakete teilen, sonst wird die URL zu lang
@@ -159,10 +200,9 @@ async function loadModelData(force) {
       ws[i][p] = spd; wu[i][p] = -spd * Math.sin(dir); wv[i][p] = -spd * Math.cos(dir);
     }
   });
-  mapS.grid = { at: Date.now(), times, cc, pr, sn, t2, sw, wu, wv, ws };
-  mapS.gridImg.forEach(u => URL.revokeObjectURL(u)); mapS.gridImg.clear();
   const ct = c[0].hourly.time.map(s => Date.parse(s + 'Z'));
-  mapS.cities = { times: ct, list: c.map(x => ({ code: x.hourly.weather_code, t: x.hourly.temperature_2m, day: x.hourly.is_day })) };
+  useGrid({ at: Date.now(), times, cc, pr, sn, t2, sw, wu, wv, ws },
+    { times: ct, list: c.map(x => ({ code: x.hourly.weather_code, t: x.hourly.temperature_2m, day: x.hourly.is_day })) });
 }
 
 // Stundenwert gilt für die vorangehende Stunde (Summe) bzw. den Zeitpunkt -> nächste volle Stunde
@@ -354,7 +394,7 @@ function satImage(t, color) {
       if (color) {
         const blob = await (await fetch(url)).blob();
         if (!blob.type.startsWith('image/')) throw new Error('kein Bild');
-        return URL.createObjectURL(blob);
+        return { url: URL.createObjectURL(blob), b };     // gleiches Format wie die Wolkenbilder
       }
       // Die Wolkenmaske sagt nur, WO Wolken sind (Rot-Kanal: 255 = Wolke, 0 = wolkenfrei) – auch dünne
       // Schleier zählen dort als „Wolke“. WIE DICHT sie sind, kommt
@@ -671,6 +711,10 @@ async function showFrame(i) {
   // Datenstand der Wolken anzeigen (Satellitenbilder sind 15–40 Min. alt)
   const satT = mapS.range === 'now' && (mapS.layers.clouds || mapS.layers.solar) ? satTimeFor(f.t, mapS.layers.sat && mapS.layers.clouds ? 'color' : 'clm') : null;
   $('#mcSrc').textContent = satT != null ? `🛰 Satellit ${fmtTime(satT)} Uhr${f.t - satT > 20 * MIN ? ' (letztes Bild)' : ''}` : '';
+  // Wind, Temperatur und die Folgetage brauchen das Modellraster – fehlt es (z. B. Tageslimit), sagen wir das
+  if (!mapS.grid && (mapS.layers.wind || mapS.layers.temp || mapS.range !== 'now')) {
+    $('#mcSrc').textContent = '⚠ Modelldaten gerade nicht verfügbar (Tageslimit Open-Meteo)';
+  }
   updateCities(f.t);
 
   const tok = ++mapS.token, Ly = mapS.layers, now = mapS.range === 'now';

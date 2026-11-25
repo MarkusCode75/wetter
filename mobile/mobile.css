@@ -44,13 +44,14 @@ svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; 
 .pull-hint.show { height: 22px; }
 
 /* ---------- Kopfbereich ---------- */
-.hero { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 0; }
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 4px 2px; }
 .hero .temp { font: 300 84px/0.95 'Space Grotesk', sans-serif; letter-spacing: -3px; }
-.hero .cond { font-size: 16px; font-weight: 600; margin-top: 6px; }
-.hero .line { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); margin-top: 3px; }
+.hero .cond { font-size: 17px; font-weight: 600; margin-top: 10px; }
+.hero .line { display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 1.35; color: var(--soft); margin-top: 7px; }
+.hero .cond + .line { margin-top: 3px; margin-bottom: 4px; }
 .hero .line svg { width: 17px; height: 17px; color: var(--wind); flex: none; }
 .hero .big-ico { width: 96px; height: 96px; flex: none; }
-.station { font-size: 11px; color: var(--muted); padding: 0 4px; margin-top: -6px; }
+.station { font-size: 11px; color: var(--muted); padding: 2px 4px 0; }
 .place-name { font-size: 13px; color: var(--soft); padding: 0 4px; display: flex; align-items: center; gap: 6px; }
 
 /* ---------- Warnung ---------- */
@@ -168,11 +169,19 @@ svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; 
 .city-wx { display: flex !important; align-items: center; justify-content: center; gap: 1px; pointer-events: none; font-weight: 700; color: #fff; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.9); }
 .city-wx .e { font-size: 18px; } .city-wx .t { font-size: 12px; }
 .mine-wrap { background: none; border: 0; }
-.mine-chip { transform: translate(-50%, -50%); display: flex !important; align-items: center; gap: 4px; width: max-content !important; height: auto !important; padding: 3px 9px 3px 4px; border-radius: 999px; background: #0c2440; border: 2px solid var(--accent); color: #fff; box-shadow: 0 3px 10px rgba(0,0,0,.4); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
-.mine-chip .k { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; font-size: 11px; }
-.mine-chip .k svg { width: 12px; height: 12px; stroke-width: 3; }
-.mine-chip .w { width: 18px; height: 18px; }
-.mine-chip .tp { font: 700 13px 'Space Grotesk', sans-serif; }
+/* Eigene Orte als kleine Stecknadel: Blase über dem Ort, Spitze und Punkt markieren die genaue Stelle */
+.mine-dot { position: absolute; left: 0; top: 0; width: 8px; height: 8px; transform: translate(-50%, -50%); border-radius: 50%;
+  background: var(--accent); border: 2px solid #0c2440; box-shadow: 0 0 0 1px rgba(255,255,255,.6); pointer-events: none; }
+.mine-chip { position: absolute; left: 0; top: 0; transform: translate(-50%, calc(-100% - 8px)); display: flex !important; align-items: center; gap: 3px;
+  width: max-content !important; height: auto !important; padding: 2px 6px 2px 2px; border-radius: 999px; background: #0c2440; border: 1.5px solid var(--accent);
+  color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; }
+.mine-chip::after { content: ''; position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: var(--accent); border-bottom: 0; }
+.mine-chip .k { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; flex: none; }
+.mine-chip .k svg { width: 10px; height: 10px; stroke-width: 3; }
+.mine-chip .nm { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+.mine-chip .w { width: 14px; height: 14px; flex: none; }
+.mine-chip .tp { font: 700 11px 'Space Grotesk', sans-serif; }
 
 /* Ebenen-Blatt */
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(6, 12, 22, .55); z-index: 900; }

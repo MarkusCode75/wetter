@@ -51,8 +51,12 @@ const mobileMap = {
     ].filter(([l]) => l);
     for (const [loc, kIco] of items) {
       const s = state.summary.get(loc.key);
-      const name = loc.key === 'home' ? 'Zuhause' : loc.name;
-      const html = `<div class="mine-chip"><span class="k">${kIco}</span>${esc(name)}${s ? `${icon(wxKind(s.code, s.isDay), 'w')}<span class="tp">${deg(s.t)}</span>` : ''}</div>`;
+      // Standort und Zuhause: nur Symbol; Favoriten mit Namen. Punkt + Spitze zeigen den genauen Ort.
+      const iconOnly = loc.key === 'current' || loc.key === 'home';
+      const label = loc.key === 'home' ? 'Zuhause' : loc.name;
+      const html = `<div class="mine-dot"></div><div class="mine-chip${iconOnly ? ' icon-only' : ''}" title="${esc(label)}">` +
+        `<span class="k">${kIco}</span>${iconOnly ? '' : `<span class="nm">${esc(label)}</span>`}` +
+        `${s ? `${icon(summaryKind(s), 'w')}<span class="tp">${deg(s.t)}</span>` : ''}</div>`;
       L.marker([loc.lat, loc.lon], {
         icon: L.divIcon({ className: 'mine-wrap', html, iconSize: [0, 0] }),
         interactive: true, keyboard: false, zIndexOffset: 2000,
