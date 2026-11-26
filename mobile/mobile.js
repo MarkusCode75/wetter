@@ -22,6 +22,20 @@ const DIRS = ['Nord', 'Nordost', 'Ost', 'Südost', 'Süd', 'Südwest', 'West', '
 const dirName = d => d == null ? '' : DIRS[Math.round(d / 45) % 8];
 const WIND_SHORT = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
 const titleCase = s => !s ? '' : (s === s.toUpperCase() ? s.toLowerCase().replace(/(^|[\s\-/(])(\p{L})/gu, (m, a, b) => a + b.toUpperCase()) : s);
+// Aktive DWD-Warnungen; Folgewarnungen desselben Ereignisses (eine endet, die nächste beginnt) werden zu einer zusammengefasst
+function activeAlerts(res) {
+  const t = s => s ? new Date(s).getTime() : null, now = Date.now();
+  const list = (res?.alerts || []).filter(a => !a.expires || t(a.expires) > now)
+    .sort((a, b) => (t(a.onset) ?? 0) - (t(b.onset) ?? 0));
+  const out = [];
+  for (const a of list) {
+    const prev = out.find(p => p.event_de === a.event_de && p.severity === a.severity &&
+      p.expires && (t(a.onset) ?? 0) <= t(p.expires) + 60 * 60000);
+    if (prev) { if (!a.expires || t(a.expires) > t(prev.expires)) prev.expires = a.expires; }
+    else out.push({ ...a });
+  }
+  return out;
+}
 // DWD kürzt Stationsnamen auf 20 Zeichen, z. B. „JUELICH (KLAERANLAGE“ – fehlende Klammer ergänzen
 const stationName = s => { const t = titleCase(s); return (t.match(/\(/g) || []).length > (t.match(/\)/g) || []).length ? `${t})` : t; };
 function relMin(t) {
@@ -314,7 +328,7 @@ function fetchPlace(loc, full = true) {
       ...om, models: 'icon_seamless', forecast_days: 7,
       current: 'temperature_2m,apparent_temperature,weather_code,is_day,relative_humidity_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl',
       hourly: 'temperature_2m,precipitation,precipitation_probability,weather_code,is_day,wind_speed_10m,wind_direction_10m,relative_humidity_2m,pressure_msl,dew_point_2m,snowfall,snow_depth,soil_temperature_0cm',
-      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset,wind_gusts_10m_max',
+      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset,wind_gusts_10m_max,sunshine_duration',
     })}`),
     aq: getJSON(`https://air-quality-api.open-meteo.com/v1/air-quality?${q({ ...om, forecast_days: 2, current: 'european_aqi,pm10,pm2_5,nitrogen_dioxide', hourly: POLLEN.map(p => p[0]).join(',') })}`),
   };
@@ -467,7 +481,7 @@ function renderWetter(loc, d) {
   const mi = moonInfo(loc.lat, loc.lon);
 
   // Warnungen
-  const alerts = (d.alerts?.alerts || []).filter(a => !a.expires || new Date(a.expires) > Date.now());
+  const alerts = activeAlerts(d.alerts);
   const warnHtml = alerts.map(a => `
     <details class="warn ${a.severity === 'severe' || a.severity === 'extreme' ? 'severe' : ''}">
       <summary>${ICO.warn}<span style="flex:1"><b>${esc(titleCase(a.event_de || ''))}</b> · ${a.expires ? `bis ${fmtWdTime(a.expires)}` : 'aktiv'}</span>›</summary>
@@ -504,12 +518,13 @@ function renderWetter(loc, d) {
       const a = (dd.temperature_2m_min[i] - lo) / span * 100, b = (dd.temperature_2m_max[i] - lo) / span * 100;
       const name = i === 0 ? 'Heute' : i === 1 ? 'Morgen' : new Date(t).toLocaleDateString(de, { weekday: 'short', day: 'numeric' });
       const ps = dd.precipitation_sum[i];
+      const sh = dd.sunshine_duration?.[i] != null ? dd.sunshine_duration[i] / 3600 : null;   // Sekunden → Stunden
       days += `<div class="day">
         <div class="dn">${name}</div>${icon(wxKind(dd.weather_code[i], 1), 'ico', WMO_TEXT[dd.weather_code[i]])}
         <div class="mn">${deg(dd.temperature_2m_min[i])}</div>
         <div class="bar"><span style="left:${a}%;width:${Math.max(3, b - a)}%"></span></div>
         <div class="mx">${deg(dd.temperature_2m_max[i])}</div>
-        <div class="pr">${ps >= 0.1 ? `${r1(ps)} mm` : ''}</div>
+        <div class="pr">${sh != null ? `<span class="sh" title="Sonnenscheindauer">☀ ${sh < 0.05 ? '0' : r1(sh)} h</span>` : ''}${ps >= 0.1 ? `<span title="Niederschlag">${r1(ps)} mm</span>` : ''}</div>
       </div>`;
     });
   }
@@ -567,7 +582,7 @@ async function loadSummaries(force) {
   if (!force && Date.now() - state.summaryAt < 10 * MIN && locs.every(l => state.summary.has(l.key))) return;
   const lat = locs.map(l => l.lat.toFixed(2)).join(','), lon = locs.map(l => l.lon.toFixed(2)).join(',');
   const alertsP = Promise.all(locs.map(l => l.key.startsWith('fav') ? getJSON(`https://api.brightsky.dev/alerts?lat=${l.lat.toFixed(2)}&lon=${l.lon.toFixed(2)}`).catch(() => null) : null));
-  const warnNote = a => { const al = (a?.alerts || []).filter(x => !x.expires || new Date(x.expires) > Date.now()); return al.length ? `${titleCase(al[0].event_de || 'Warnung')}${al[0].expires ? ` bis ${fmtWdTime(al[0].expires)}` : ''}` : null; };
+  const warnNote = a => { const al = activeAlerts(a); return al.length ? `${titleCase(al[0].event_de || 'Warnung')}${al[0].expires ? ` bis ${fmtWdTime(al[0].expires)}` : ''}` : null; };
   try {
     const r = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&models=icon_seamless&timezone=Europe%2FBerlin&forecast_days=2&` +
       q({ current: 'temperature_2m,weather_code,is_day', daily: 'temperature_2m_min,temperature_2m_max', hourly: 'precipitation,snowfall,wind_gusts_10m' }));
@@ -579,7 +594,7 @@ async function loadSummaries(force) {
       const h = x.hourly, idx = h.time.map((t, i) => [new Date(t).getTime(), i]).filter(([t]) => t > now - 30 * MIN && t < now + 24 * 60 * MIN).map(([, i]) => i);
       const wet = idx.find(i => h.precipitation[i] >= 0.2);
       const gust = Math.max(0, ...idx.map(i => h.wind_gusts_10m[i] || 0));
-      const al = (alerts[k]?.alerts || []).filter(a => !a.expires || new Date(a.expires) > now);
+      const al = activeAlerts(alerts[k]);
       let note = 'Trocken in den nächsten 24 Std.', tone = '';
       if (al.length) { note = `${titleCase(al[0].event_de || 'Warnung')}${al[0].expires ? ` bis ${fmtWdTime(al[0].expires)}` : ''}`; tone = 'warn-t'; }
       else if (wet != null) {
